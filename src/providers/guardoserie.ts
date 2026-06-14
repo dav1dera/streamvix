@@ -6,6 +6,7 @@ import { CookieJar } from 'tough-cookie';
 import * as crypto from 'crypto';
 import { Stream } from 'stremio-addon-sdk';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 import { buildUnifiedStreamName, providerLabel } from '../utils/unifiedNames';
 import { getDomain } from '../utils/domains';
 
@@ -50,31 +51,35 @@ function getProxiedUrl(targetUrl: string, workerUrl: string): string {
     return `${workerUrl}${separator}url=${encodeURIComponent(targetUrl)}`;
 }
 
-// Helper to fetch with bypass (Direct -> CF_PROXY -> Warp)
+// Helper to fetch with bypass (Direct -> PROXY -> CF_PROXY)
 async function fetchWithBypass(url: string, options: any = {}): Promise<any> {
     const workers = getWorkerUrls();
     const PROXY = process.env.PROXY;
 
     try {
         // 1. Try direct fetch (Fastest)
-        return await getClient().get(url, { 
-            ...options, 
-            timeout: 1000 
+        return await getClient().get(url, {
+            ...options,
+            timeout: 1000
         });
     } catch (e: any) {
         if (e.response?.status === 403 || e.response?.status === 400 || !e.response || e.code === 'ECONNABORTED' || e.message === 'timeout exceeded') {
-            
+
             console.log(`[Guardoserie] Blocked or timeout on ${url} (${e.response?.status || e.code || 'TIMEOUT'}), trying bypass...`);
-            
+
             const finalTargetUrl = buildUrlWithParams(url, options.params);
 
             // 2. PROXY (priority)
             if (PROXY) {
-                console.log(`[Guardoserie] Trying PROXY for ${url}...`);
+                const proxyType = /^socks/i.test(PROXY) ? 'SOCKS' : 'HTTP/HTTPS';
+                console.log(`[Guardoserie] Trying ${proxyType} PROXY for ${url}...`);
                 try {
-                    const proxyAgent = new HttpsProxyAgent(PROXY);
+                    const proxyAgent = /^socks/i.test(PROXY)
+                        ? new SocksProxyAgent(PROXY)
+                        : new HttpsProxyAgent(PROXY);
                     const proxyRes = await axios.get(finalTargetUrl, {
                         ...options,
+                        httpAgent: proxyAgent,
                         httpsAgent: proxyAgent,
                         proxy: false,
                         timeout: 8000,
@@ -85,21 +90,21 @@ async function fetchWithBypass(url: string, options: any = {}): Promise<any> {
                             'Referer': `${getTargetDomain()}/`
                         }
                     });
-                    console.log(`[Guardoserie] PROXY bypass success for ${url}`);
+                    console.log(`[Guardoserie] ${proxyType} PROXY bypass success for ${url}`);
                     return proxyRes;
                 } catch (err: any) {
-                    console.warn(`[Guardoserie] PROXY bypass failed for ${url}: ${err.message}`);
+                    console.warn(`[Guardoserie] ${proxyType} PROXY bypass failed for ${url}: ${err.message}`);
                 }
             }
 
             // 3. CF_PROXY Workers (fallback, with Rotation)
             if (workers.length > 0) {
                 const startIndex = Math.floor(Math.random() * workers.length);
-                
+
                 for (let i = 0; i < workers.length; i++) {
                     const workerIndex = (startIndex + i) % workers.length;
                     const workerUrl = workers[workerIndex];
-                    
+
                     console.log(`[Guardoserie] Trying CF Worker #${workerIndex + 1} for ${url}...`);
                     try {
                         const cfProxiedUrl = getProxiedUrl(finalTargetUrl, workerUrl);
