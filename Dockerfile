@@ -29,6 +29,21 @@ RUN npm install -g pnpm@8.15.5
 # Copia i file del progetto nella directory di lavoro
 COPY . .
 
+# Fix test: preserva gli schemi SOCKS nel resolver Uprot/Clicka.
+# Prima socks5h://gluetun:1081 veniva trasformato in
+# http://socks5h://gluetun:1081 e curl provava a risolvere l'host "socks5h".
+RUN python3 - <<'PY'
+from pathlib import Path
+
+path = Path('/usr/src/app/scripts/uprot_resolver.py')
+text = path.read_text()
+old = "scheme_proxy = proxy_url if proxy_url.startswith('http') else f'http://{proxy_url}'"
+new = "scheme_proxy = proxy_url if '://' in proxy_url else f'http://{proxy_url}'"
+if old not in text:
+    raise SystemExit('Expected Uprot proxy normalization line not found')
+path.write_text(text.replace(old, new, 1))
+PY
+
 # Assicura che l'utente node sia proprietario della directory dell'app e del suo contenuto
 RUN chown -R node:node /usr/src/app
 
